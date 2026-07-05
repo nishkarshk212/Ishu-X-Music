@@ -298,6 +298,7 @@ async def _ytdlp_download(link: str, media_type: str) -> str | None:
                 "no_warnings":      True,
                 "cookiefile":       cookie,
                 "merge_output_format": "mp4",
+                "remote_components": ["ejs:github"],
             }
         else:
             ydl_opts = {
@@ -306,6 +307,7 @@ async def _ytdlp_download(link: str, media_type: str) -> str | None:
                 "quiet":            True,
                 "no_warnings":      True,
                 "cookiefile":       cookie,
+                "remote_components": ["ejs:github"],
                 "postprocessors":   [{
                     "key":            "FFmpegExtractAudio",
                     "preferredcodec": "mp3",
