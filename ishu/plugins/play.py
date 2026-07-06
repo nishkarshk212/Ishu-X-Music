@@ -149,13 +149,16 @@ async def play_hndlr(
 
             return
 
-    # Download the file first for reliable playback
-    if not file.file_path:
-        fname = f"downloads/{file.id}.{'mp4' if video else 'mp3'}"
-        if Path(fname).exists():
-            file.file_path = fname
-        else:
-            file.file_path = await yt.download(file.id, video=video)
+    # Get stream URL first for super fast playback!
+    if not file.stream_url and not file.file_path:
+        # Try to get fast stream URL
+        file.stream_url = await yt.get_stream_url(file.id, video=video)
+        
+        # If no stream URL, check if file exists already
+        if not file.stream_url:
+            fname = f"downloads/{file.id}.{'mp4' if video else 'mp3'}"
+            if Path(fname).exists():
+                file.file_path = fname
 
     # Start playback
     await anon.play_media(chat_id=m.chat.id, message=sent, media=file)
