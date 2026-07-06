@@ -58,8 +58,22 @@ class TgCall(PyTgCalls):
             else config.DEFAULT_THUMB
         ) if config.THUMB_GEN else None
 
-        # Use stream_url if available for fast play; else file_path
-        media_path = media.stream_url or media.file_path
+        # First, try to get a fast stream URL for instant playback
+        media_path = media.stream_url
+        if not media_path and isinstance(media, Track):
+            media_path = await yt.get_stream_url(media.id, video=media.video)
+            if media_path:
+                media.stream_url = media_path
+
+        # If still no stream URL, try to use file path
+        if not media_path:
+            media_path = media.file_path
+
+        # If no file either, try to download now
+        if not media_path and isinstance(media, Track):
+            media.file_path = await yt.download(media.id, video=media.video)
+            media_path = media.file_path
+
         if not media_path:
             await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             return await self.play_next(chat_id)
