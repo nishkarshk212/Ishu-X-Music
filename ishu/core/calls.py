@@ -106,12 +106,12 @@ class TgCall(PyTgCalls):
                 if len(short_title) > 50:
                     short_title = short_title[:47].rstrip() + "…"
                     
-                text = "> " + _lang["play_media"].format(
+                text = _lang["play_media"].format(
                     media.url,
                     short_title,
                     media.duration,
                     media.user,
-                ).replace("\n", "\n> ")
+                )
 
                 keyboard = buttons.controls(chat_id)
 
