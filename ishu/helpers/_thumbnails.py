@@ -4,7 +4,6 @@
 
 import os
 import asyncio
-import numpy as np
 import random
 import aiohttp
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
@@ -34,8 +33,8 @@ def safe_font(path, size):
 class Thumbnail:
     def __init__(self):
         self.size = (1280, 720)
-        self.font_title = safe_font(FONT_TITLE_PATH, 30)
-        self.font_info = safe_font(FONT_INFO_PATH, 24)
+        self.font_title = safe_font(FONT_TITLE_PATH, 42)
+        self.font_info = safe_font(FONT_INFO_PATH, 32)
 
     async def start(self):
         os.makedirs("cache", exist_ok=True)
@@ -80,53 +79,31 @@ class Thumbnail:
         count = Counter(pixels)
         return [c[0] for c in count.most_common(n)]
 
-    def create_gradient_background(self, size, color1, color2):
-        w, h = size
-        base = Image.new("RGB", size, color1)
-        draw = ImageDraw.Draw(base)
-        for y in range(h):
-            ratio = y / h
-            r = int(color1[0] + (color2[0] - color1[0]) * ratio)
-            g = int(color1[1] + (color2[1] - color1[1]) * ratio)
-            b = int(color1[2] + (color2[2] - color1[2]) * ratio)
-            draw.line([(0, y), (w, y)], fill=(r, g, b))
-        return base
-
-    def create_rounded_rect(self, size, radius, color):
-        w, h = size
-        img = Image.new("L", (w, h), 0)
-        draw = ImageDraw.Draw(img)
-        draw.rounded_rectangle([0, 0, w - 1, h - 1], radius=radius, fill=255)
-        color_img = Image.new("RGBA", (w, h), color)
-        color_img.putalpha(img)
-        return color_img
-
-    def create_glow(self, size, radius, color, intensity=150):
-        base = Image.new("RGBA", size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(base)
-        draw.ellipse([0, 0, size[0], size[1]], fill=(*color, intensity))
-        for i in range(5):
-            base = base.filter(ImageFilter.GaussianBlur(radius / 5))
-        return base
-
-    def create_waveform(self, width, height, color):
+    def create_simple_waveform(self, width, height, color):
         img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         
-        # Generate random waveform bars
-        bar_count = int(width / 6)
-        bar_width = 4
-        gap = 2
+        # Generate symmetric waveform bars (mirrored from center)
+        bar_count = 40
+        bar_width = 6
+        gap = 4
+        total_width = bar_count * (bar_width + gap)
+        start_x = (width - total_width) // 2
+        
         for i in range(bar_count):
-            x = i * (bar_width + gap)
-            # Random height with some symmetry
-            bar_height = random.randint(int(height * 0.2), int(height * 0.8))
+            x = start_x + i * (bar_width + gap)
+            # Symmetric height (short in center, tall at ends)
+            dist_from_center = abs(i - bar_count // 2)
+            max_height = height - 10
+            min_height = height // 4
+            bar_height = max(min_height, max_height - (dist_from_center / (bar_count // 2)) * (max_height - min_height))
+            bar_height = int(bar_height + random.randint(-5, 5))
             y_top = (height - bar_height) // 2
             y_bottom = y_top + bar_height
-            draw.rectangle([x, y_top, x + bar_width, y_bottom], fill=(*color, 180))
+            draw.rectangle([x, y_top, x + bar_width, y_bottom], fill=(*color, 220))
         
         # Blur slightly
-        img = img.filter(ImageFilter.GaussianBlur(0.7))
+        img = img.filter(ImageFilter.GaussianBlur(0.5))
         return img
 
     async def generate(self, song: Track) -> str:
@@ -150,74 +127,54 @@ class Thumbnail:
             W, H = self.size
 
             # --- 1. ENHANCED ALBUM ART ---
-            # Enhance sharpness
             enhancer = ImageEnhance.Sharpness(src)
             src_enhanced = enhancer.enhance(1.1)
-            # Enhance color
             color_enhancer = ImageEnhance.Color(src_enhanced)
             src_enhanced = color_enhancer.enhance(1.15)
-            # Enhance contrast
             contrast_enhancer = ImageEnhance.Contrast(src_enhanced)
             src_enhanced = contrast_enhancer.enhance(1.05)
 
-            # --- 2. DARK GRADIENT BACKGROUND WITH DOMINANT COLORS ---
-            # Get top 3 dominant colors
-            dominant_colors = self.get_dominant_colors(src_enhanced)
-            # Use first and second for gradient, darken them
-            color1 = tuple([max(0, c - 60) for c in dominant_colors[0]])
-            color2 = tuple([max(0, c - 90) for c in dominant_colors[1]]) if len(dominant_colors) >= 2 else color1
-            
-            bg = self.create_gradient_background(self.size, color1, color2)
-            bg = bg.convert("RGBA")
-            
-            # Add subtle blur overlay for depth
+            # --- 2. DARK BLURRED BACKGROUND ---
             bg_ratio = W / H
             src_ratio = src.width / src.height
             if src_ratio > bg_ratio:
                 new_w = int(src.height * bg_ratio)
                 offset = (src.width - new_w) // 2
-                blurred_bg = src.crop((offset, 0, offset + new_w, src.height))
+                bg = src.crop((offset, 0, offset + new_w, src.height))
             else:
                 new_h = int(src.width / bg_ratio)
                 offset = (src.height - new_h) // 2
-                blurred_bg = src.crop((0, offset, src.width, offset + new_h))
+                bg = src.crop((0, offset, src.width, offset + new_h))
 
-            blurred_bg = blurred_bg.resize((W, H), Image.Resampling.LANCZOS)
-            blurred_bg = blurred_bg.filter(ImageFilter.GaussianBlur(40))
-            # Blend blurred bg with gradient (low opacity)
-            bg = Image.blend(bg, blurred_bg, 0.25)
+            bg = bg.resize((W, H), Image.Resampling.LANCZOS)
+            bg = bg.filter(ImageFilter.GaussianBlur(45))
+            bg = bg.convert("RGBA")
+            # Dark overlay
+            bg_overlay = Image.new("RGBA", (W, H), (0, 0, 0, 150))
+            bg = Image.alpha_composite(bg, bg_overlay)
 
-            # Add vignette for depth
+            # Add vignette
             vignette = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             draw_vignette = ImageDraw.Draw(vignette)
-            # Dark outer, brighter center
-            draw_vignette.ellipse([-150, -150, W + 150, H + 150], fill=(0, 0, 0, 0))
-            draw_vignette.ellipse([150, 80, W - 150, H - 80], fill=(0, 0, 0, 180))
-            vignette = vignette.filter(ImageFilter.GaussianBlur(120))
+            draw_vignette.ellipse([-200, -200, W + 200, H + 200], fill=(0, 0, 0, 0))
+            draw_vignette.ellipse([300, 150, W - 300, H - 150], fill=(0, 0, 0, 160))
+            vignette = vignette.filter(ImageFilter.GaussianBlur(150))
             bg = Image.alpha_composite(bg, vignette)
 
-            # --- 3. COVER ART WITH GLOW AND SHADOW ---
-            cover_x, cover_y = 120, 90
-            cover_w, cover_h = 540, 540
-            cover_radius = 50
+            # --- 3. COVER ART (LEFT SIDE) ---
+            cover_x, cover_y = 100, 110
+            cover_w, cover_h = 500, 500
+            cover_radius = 60
 
-            # Glow behind cover art (using dominant color)
-            dominant_color = dominant_colors[0]
-            glow_size = (cover_w + 140, cover_h + 140)
-            glow_img = self.create_glow(glow_size, 70, dominant_color, 120)
-            glow_x = cover_x - 70
-            glow_y = cover_y - 70
-            bg.paste(glow_img, (glow_x, glow_y), glow_img)
-
-            # Large soft shadow
+            # Large soft shadow for cover
             shadow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             shadow_draw = ImageDraw.Draw(shadow_layer)
             shadow_draw.rounded_rectangle(
-                (cover_x + 12, cover_y + 14, cover_x + cover_w + 12, cover_y + cover_h + 14),
-                radius=cover_radius + 8,
-                fill=(0, 0, 0, 180),
+                (cover_x + 15, cover_y + 15, cover_x + cover_w + 15, cover_y + cover_h + 15),
+                radius=cover_radius + 10,
+                fill=(0, 0, 0, 220),
             )
-            shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(30))
+            shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(35))
             bg = Image.alpha_composite(bg, shadow_layer)
 
             # Cover art
@@ -228,18 +185,10 @@ class Thumbnail:
             )
             bg.paste(cover_resized, (cover_x, cover_y), cover_mask)
 
-            # --- 4. MINIMALIST WAVEFORM ---
-            waveform_x = 700
-            waveform_y = cover_y + cover_h - 90
-            waveform_w = 460
-            waveform_h = 70
-            waveform = self.create_waveform(waveform_w, waveform_h, dominant_color)
-            bg.paste(waveform, (waveform_x, waveform_y), waveform)
-
-            # --- 5. TEXT ---
+            # --- 4. TEXT (RIGHT SIDE) ---
             draw = ImageDraw.Draw(bg)
-            text_x = 700
-            text_max_w = 460
+            text_x = 680
+            text_max_w = 500
 
             def ellipsize(s, font, max_w):
                 if draw.textbbox((0, 0), s, font=font)[2] <= max_w:
@@ -256,31 +205,32 @@ class Thumbnail:
                         hi = mid - 1
                 return best
 
+            # Get dominant color for accent
+            dominant_colors = self.get_dominant_colors(src_enhanced)
+            dominant_color = dominant_colors[0]
+
             # Title
             title_str = ellipsize(unidecode(str(song.title)), self.font_title, text_max_w)
-            title_y = cover_y + 80
-            # Draw subtle text shadow
-            draw.text((text_x + 2, title_y + 2), title_str, fill=(0, 0, 0, 150), font=self.font_title)
+            title_y = 180
+            # Text shadow
+            draw.text((text_x + 3, title_y + 3), title_str, fill=(0, 0, 0, 180), font=self.font_title)
             draw.text((text_x, title_y), title_str, fill=(255, 255, 255, 255), font=self.font_title)
 
             # Artist/Channel
             artist_str = ellipsize(unidecode(str(song.channel_name)), self.font_info, text_max_w + 40)
-            artist_y = title_y + 55
-            # Draw subtle text shadow
-            draw.text((text_x + 1, artist_y + 1), artist_str, fill=(0, 0, 0, 100), font=self.font_info)
-            draw.text((text_x, artist_y), artist_str, fill=(230, 230, 230, 255), font=self.font_info)
+            artist_y = title_y + 70
+            # Text shadow
+            draw.text((text_x + 2, artist_y + 2), artist_str, fill=(0, 0, 0, 130), font=self.font_info)
+            draw.text((text_x, artist_y), artist_str, fill=(235, 235, 235, 255), font=self.font_info)
 
-            # --- 6. MUSIC-THEMED ACCENT ---
-            # Small music note icon (simple)
-            note_x = text_x + text_max_w - 40
-            note_y = cover_y + 30
-            draw_note = ImageDraw.Draw(bg)
-            # Draw a simple note shape
-            draw_note.ellipse([note_x, note_y + 18, note_x + 16, note_y + 34], fill=(*dominant_color, 200))
-            draw_note.rectangle([note_x + 14, note_y, note_x + 18, note_y + 26], fill=(*dominant_color, 200))
-            draw_note.ellipse([note_x - 20, note_y + 8, note_x + 0, note_y + 24], fill=(*dominant_color, 150))
-            draw_note.rectangle([note_x - 2, note_y - 10, note_x + 2, note_y + 16], fill=(*dominant_color, 150))
-            
+            # --- 5. SIMPLE WAVEFORM (BOTTOM RIGHT) ---
+            waveform_x = 680
+            waveform_y = H - 180
+            waveform_w = 500
+            waveform_h = 80
+            waveform = self.create_simple_waveform(waveform_w, waveform_h, dominant_color)
+            bg.paste(waveform, (waveform_x, waveform_y), waveform)
+
             out = bg.convert("RGB")
             out.save(final_path, "JPEG", quality=92, optimize=True)
 
