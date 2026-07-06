@@ -149,16 +149,15 @@ async def play_hndlr(
 
             return
 
-    # First try to get stream URL for instant playback
-    if not file.stream_url and not file.file_path:
-        fname = f"downloads/{file.id}.{'mp4' if video else 'webm'}"
+    # Download the file first for reliable playback
+    if not file.file_path:
+        fname = f"downloads/{file.id}.{'mp4' if video else 'mp3'}"
         if Path(fname).exists():
             file.file_path = fname
         else:
-            await sent.edit_text(m.lang["play_searching"])  # Show "searching" while getting stream
-            file.stream_url = await yt.get_stream_url(file.id, video=video)
+            file.file_path = await yt.download(file.id, video=video)
 
-    # Start playback immediately with stream_url if available
+    # Start playback
     await anon.play_media(chat_id=m.chat.id, message=sent, media=file)
     
     # Start background download of this track (and playlist tracks) for future
