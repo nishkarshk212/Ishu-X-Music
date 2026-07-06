@@ -7,7 +7,7 @@ import asyncio
 import numpy as np
 import random
 import aiohttp
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps, ImageChops
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 from collections import Counter
 from ishu import config
 from ishu.helpers import Track
@@ -23,11 +23,13 @@ FONT_TITLE_PATH = os.path.join(BASE_DIR, "font.ttf")
 FONT_INFO_PATH = os.path.join(BASE_DIR, "font2.ttf")
 TEMPLATE_PATH = os.path.join(BASE_DIR, "..", "assets", "template.png")
 
+
 def safe_font(path, size):
     try:
         return ImageFont.truetype(path, size)
     except Exception:
         return ImageFont.load_default()
+
 
 class Thumbnail:
     def __init__(self):
