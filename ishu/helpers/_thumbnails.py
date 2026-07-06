@@ -34,8 +34,8 @@ def safe_font(path, size):
 class Thumbnail:
     def __init__(self):
         self.size = (1280, 720)
-        self.font_title = safe_font(FONT_TITLE_PATH, 28)
-        self.font_info = safe_font(FONT_INFO_PATH, 22)
+        self.font_title = safe_font(FONT_TITLE_PATH, 30)
+        self.font_info = safe_font(FONT_INFO_PATH, 24)
 
     async def start(self):
         os.makedirs("cache", exist_ok=True)
@@ -71,14 +71,26 @@ class Thumbnail:
                 await asyncio.sleep(1)
         return output_path
 
-    def get_dominant_color(self, img):
+    def get_dominant_colors(self, img, n=3):
         # Resize for performance
         small_img = img.resize((50, 50), Image.Resampling.LANCZOS)
         pixels = list(small_img.getdata())
+        # Ignore fully transparent pixels
+        pixels = [p[:3] for p in pixels if len(p) < 4 or p[3] > 50]
         count = Counter(pixels)
-        # Get the most common color
-        dominant = count.most_common(1)[0][0]
-        return dominant
+        return [c[0] for c in count.most_common(n)]
+
+    def create_gradient_background(self, size, color1, color2):
+        w, h = size
+        base = Image.new("RGB", size, color1)
+        draw = ImageDraw.Draw(base)
+        for y in range(h):
+            ratio = y / h
+            r = int(color1[0] + (color2[0] - color1[0]) * ratio)
+            g = int(color1[1] + (color2[1] - color1[1]) * ratio)
+            b = int(color1[2] + (color2[2] - color1[2]) * ratio)
+            draw.line([(0, y), (w, y)], fill=(r, g, b))
+        return base
 
     def create_rounded_rect(self, size, radius, color):
         w, h = size
@@ -148,57 +160,64 @@ class Thumbnail:
             contrast_enhancer = ImageEnhance.Contrast(src_enhanced)
             src_enhanced = contrast_enhancer.enhance(1.05)
 
-            # --- 2. BLURRED BACKGROUND WITH COLOR TINT ---
+            # --- 2. DARK GRADIENT BACKGROUND WITH DOMINANT COLORS ---
+            # Get top 3 dominant colors
+            dominant_colors = self.get_dominant_colors(src_enhanced)
+            # Use first and second for gradient, darken them
+            color1 = tuple([max(0, c - 60) for c in dominant_colors[0]])
+            color2 = tuple([max(0, c - 90) for c in dominant_colors[1]]) if len(dominant_colors) >= 2 else color1
+            
+            bg = self.create_gradient_background(self.size, color1, color2)
+            bg = bg.convert("RGBA")
+            
+            # Add subtle blur overlay for depth
             bg_ratio = W / H
             src_ratio = src.width / src.height
             if src_ratio > bg_ratio:
                 new_w = int(src.height * bg_ratio)
                 offset = (src.width - new_w) // 2
-                bg = src.crop((offset, 0, offset + new_w, src.height))
+                blurred_bg = src.crop((offset, 0, offset + new_w, src.height))
             else:
                 new_h = int(src.width / bg_ratio)
                 offset = (src.height - new_h) // 2
-                bg = src.crop((0, offset, src.width, offset + new_h))
+                blurred_bg = src.crop((0, offset, src.width, offset + new_h))
 
-            bg = bg.resize((W, H), Image.Resampling.LANCZOS)
-            bg = bg.filter(ImageFilter.GaussianBlur(35))
-            
-            # Darken more and add subtle vignette
-            bg_overlay = Image.new("RGBA", (W, H), (0, 0, 0, 140))
-            bg = Image.alpha_composite(bg, bg_overlay)
-            
-            # Add vignette
+            blurred_bg = blurred_bg.resize((W, H), Image.Resampling.LANCZOS)
+            blurred_bg = blurred_bg.filter(ImageFilter.GaussianBlur(40))
+            # Blend blurred bg with gradient (low opacity)
+            bg = Image.blend(bg, blurred_bg, 0.25)
+
+            # Add vignette for depth
             vignette = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             draw_vignette = ImageDraw.Draw(vignette)
-            # Outer ellipse (darkest)
-            draw_vignette.ellipse([-100, -100, W + 100, H + 100], fill=(0, 0, 0, 0))
-            # Inner ellipse
-            draw_vignette.ellipse([200, 100, W - 200, H - 100], fill=(0, 0, 0, 200))
-            vignette = vignette.filter(ImageFilter.GaussianBlur(100))
+            # Dark outer, brighter center
+            draw_vignette.ellipse([-150, -150, W + 150, H + 150], fill=(0, 0, 0, 0))
+            draw_vignette.ellipse([150, 80, W - 150, H - 80], fill=(0, 0, 0, 180))
+            vignette = vignette.filter(ImageFilter.GaussianBlur(120))
             bg = Image.alpha_composite(bg, vignette)
 
             # --- 3. COVER ART WITH GLOW AND SHADOW ---
-            cover_x, cover_y = 140, 100
-            cover_w, cover_h = 520, 520
-            cover_radius = 45
+            cover_x, cover_y = 120, 90
+            cover_w, cover_h = 540, 540
+            cover_radius = 50
 
             # Glow behind cover art (using dominant color)
-            dominant_color = self.get_dominant_color(src_enhanced)[:3]
-            glow_size = (cover_w + 120, cover_h + 120)
-            glow_img = self.create_glow(glow_size, 60, dominant_color, 100)
-            glow_x = cover_x - 60
-            glow_y = cover_y - 60
+            dominant_color = dominant_colors[0]
+            glow_size = (cover_w + 140, cover_h + 140)
+            glow_img = self.create_glow(glow_size, 70, dominant_color, 120)
+            glow_x = cover_x - 70
+            glow_y = cover_y - 70
             bg.paste(glow_img, (glow_x, glow_y), glow_img)
 
             # Large soft shadow
             shadow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             shadow_draw = ImageDraw.Draw(shadow_layer)
             shadow_draw.rounded_rectangle(
-                (cover_x + 10, cover_y + 12, cover_x + cover_w + 10, cover_y + cover_h + 12),
-                radius=cover_radius + 6,
-                fill=(0, 0, 0, 160),
+                (cover_x + 12, cover_y + 14, cover_x + cover_w + 12, cover_y + cover_h + 14),
+                radius=cover_radius + 8,
+                fill=(0, 0, 0, 180),
             )
-            shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(25))
+            shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(30))
             bg = Image.alpha_composite(bg, shadow_layer)
 
             # Cover art
@@ -210,17 +229,17 @@ class Thumbnail:
             bg.paste(cover_resized, (cover_x, cover_y), cover_mask)
 
             # --- 4. MINIMALIST WAVEFORM ---
-            waveform_x = 720
-            waveform_y = cover_y + cover_h - 80
-            waveform_w = 420
-            waveform_h = 60
-            waveform = self.create_waveform(waveform_w, waveform_h, (255, 255, 255))
+            waveform_x = 700
+            waveform_y = cover_y + cover_h - 90
+            waveform_w = 460
+            waveform_h = 70
+            waveform = self.create_waveform(waveform_w, waveform_h, dominant_color)
             bg.paste(waveform, (waveform_x, waveform_y), waveform)
 
             # --- 5. TEXT ---
             draw = ImageDraw.Draw(bg)
-            text_x = 720
-            text_max_w = 420
+            text_x = 700
+            text_max_w = 460
 
             def ellipsize(s, font, max_w):
                 if draw.textbbox((0, 0), s, font=font)[2] <= max_w:
@@ -239,22 +258,22 @@ class Thumbnail:
 
             # Title
             title_str = ellipsize(unidecode(str(song.title)), self.font_title, text_max_w)
-            title_y = cover_y + 60
+            title_y = cover_y + 80
             # Draw subtle text shadow
             draw.text((text_x + 2, title_y + 2), title_str, fill=(0, 0, 0, 150), font=self.font_title)
             draw.text((text_x, title_y), title_str, fill=(255, 255, 255, 255), font=self.font_title)
 
             # Artist/Channel
             artist_str = ellipsize(unidecode(str(song.channel_name)), self.font_info, text_max_w + 40)
-            artist_y = title_y + 48
+            artist_y = title_y + 55
             # Draw subtle text shadow
             draw.text((text_x + 1, artist_y + 1), artist_str, fill=(0, 0, 0, 100), font=self.font_info)
-            draw.text((text_x, artist_y), artist_str, fill=(220, 220, 220, 255), font=self.font_info)
+            draw.text((text_x, artist_y), artist_str, fill=(230, 230, 230, 255), font=self.font_info)
 
             # --- 6. MUSIC-THEMED ACCENT ---
             # Small music note icon (simple)
             note_x = text_x + text_max_w - 40
-            note_y = cover_y + 20
+            note_y = cover_y + 30
             draw_note = ImageDraw.Draw(bg)
             # Draw a simple note shape
             draw_note.ellipse([note_x, note_y + 18, note_x + 16, note_y + 34], fill=(*dominant_color, 200))
