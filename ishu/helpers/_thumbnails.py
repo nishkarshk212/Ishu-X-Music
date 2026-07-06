@@ -119,7 +119,7 @@ class Thumbnail:
         try:
             os.makedirs("cache", exist_ok=True)
             temp = f"cache/temp_{song.id}.jpg"
-            final_path = f"cache/{song.id}.png"
+            final_path = f"cache/{song.id}.jpg"
             if os.path.exists(final_path):
                 return final_path
 
@@ -261,7 +261,7 @@ class Thumbnail:
             draw_note.rectangle([note_x - 2, note_y - 10, note_x + 2, note_y + 16], fill=(*dominant_color, 150))
             
             out = bg.convert("RGB")
-            out.save(final_path, "PNG", optimize=True, quality=95)
+            out.save(final_path, "JPEG", quality=92, optimize=True)
 
             try:
                 if os.path.exists(temp):
