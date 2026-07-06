@@ -193,10 +193,10 @@ class MongoDB:
     async def is_chat(self, chat_id: int) -> bool:
         return chat_id in self.chats
 
-    async def add_chat(self, chat_id: int) -> None:
+    async def add_chat(self, chat_id: int, chat_title: str = None) -> None:
         if not await self.is_chat(chat_id):
             self.chats.append(chat_id)
-            await self.chatsdb.insert_one({"_id": chat_id})
+            await self.chatsdb.insert_one({"_id": chat_id, "title": chat_title})
 
     async def rm_chat(self, chat_id: int) -> None:
         if await self.is_chat(chat_id):

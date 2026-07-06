@@ -52,7 +52,7 @@ async def start(_, message: types.Message):
         if await db.is_chat(message.chat.id):
             return
         await utils.send_log(message, True)
-        await db.add_chat(message.chat.id)
+        await db.add_chat(message.chat.id, message.chat.title)
 
 
 @app.on_message(filters.command(["playmode", "settings"]) & filters.group & ~app.bl_users)
@@ -82,4 +82,49 @@ async def _new_member(_, message: types.Message):
             if await db.is_chat(message.chat.id):
                 return
             await utils.send_log(message, True)
-            await db.add_chat(message.chat.id)
+            await db.add_chat(message.chat.id, message.chat.title)
+
+
+@app.on_message(filters.command(["groupdetail", "groups"]) & filters.private)
+async def group_detail(_, message: types.Message):
+    from ishu import config
+    
+    if message.from_user.id != config.OWNER_ID:
+        return
+        
+    chat_ids = await db.get_chats()
+    if not chat_ids:
+        return await message.reply_text("No groups added yet!")
+        
+    text = "<u><b>Group List</b></u>\n\n"
+    for chat_id in chat_ids:
+        try:
+            chat = await app.get_chat(chat_id)
+            title = chat.title
+            # Update title in DB if missing
+            doc = await db.chatsdb.find_one({"_id": chat_id})
+            if not doc or not doc.get("title"):
+                await db.chatsdb.update_one({"_id": chat_id}, {"$set": {"title": title}}, upsert=True)
+            text += f"• <code>{chat_id}</code> - {title}\n"
+        except Exception as e:
+            # Fallback to stored title
+            doc = await db.chatsdb.find_one({"_id": chat_id})
+            stored_title = doc.get("title", "Unknown") if doc else "Unknown"
+            text += f"• <code>{chat_id}</code> - {stored_title} (Failed to fetch details)\n"
+    
+    if len(text) > 4096:
+        # Split into parts
+        for i in range(0, len(text), 4096):
+            await message.reply_text(text[i:i+4096])
+    else:
+        await message.reply_text(text)
+
+
+@app.on_message(filters.regex(r"^/$") & ~app.bl_users)
+@lang.language()
+async def slash_help(_, message: types.Message):
+    await message.reply_text(
+        text=message.lang["help_menu"],
+        reply_markup=buttons.help_markup(message.lang),
+        quote=True,
+    )
