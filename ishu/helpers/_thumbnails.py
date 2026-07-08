@@ -111,16 +111,7 @@ class Thumbnail:
 
             # Draw Brand Header on Background
             draw_bg = ImageDraw.Draw(bg)
-            try:
-                from ishu import app
-                bot_name = app.name or "Ishu"
-            except Exception:
-                bot_name = "Ishu"
-
-            if "music" not in bot_name.lower():
-                brand_text = f"[ {bot_name.upper()} MUSIC ]"
-            else:
-                brand_text = f"[ {bot_name.upper()} ]"
+            brand_text = "Nishkarsh Kumar"
 
             brand_bbox = draw_bg.textbbox((0, 0), brand_text, font=font_brand)
             brand_w = brand_bbox[2] - brand_bbox[0]
