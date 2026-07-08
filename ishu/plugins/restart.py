@@ -43,6 +43,12 @@ async def _logger(_, m: types.Message):
         await m.reply_text(m.lang["logger_off"])
 
 
+async def restart_bot():
+    asyncio.create_task(stop())
+    await asyncio.sleep(2)
+    os.execl(sys.executable, sys.executable, "-m", "ishu")
+
+
 @app.on_message(filters.command(["restart"]) & app.sudoers)
 @lang.language()
 async def _restart(_, m: types.Message):
@@ -52,13 +58,10 @@ async def _restart(_, m: types.Message):
         shutil.rmtree(directory, ignore_errors=True)
 
     await sent.edit_text(m.lang["restarted"])
-    task = asyncio.create_task(stop())
-    await task
-
     try: os.remove("log.txt")
     except Exception: pass
 
-    os.execl(sys.executable, sys.executable, "-m", "ishu")
+    await restart_bot()
 
 
 @app.on_message(filters.command(["update"]) & filters.user(config.OWNER_ID))
@@ -86,9 +89,7 @@ async def _update(_, m: types.Message):
     for directory in ["cache", "downloads"]:
         shutil.rmtree(directory, ignore_errors=True)
         
-    await stop()
-    
     try: os.remove("log.txt")
     except Exception: pass
     
-    os.execl(sys.executable, sys.executable, "-m", "ishu")
+    await restart_bot()
