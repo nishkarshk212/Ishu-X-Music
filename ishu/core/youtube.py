@@ -42,7 +42,8 @@ DOWNLOAD_DIR        = "downloads"
 def cookie_txt_file() -> str | None:
     """Return a random cookie .txt file path from the cookies/ folder."""
     try:
-        folder    = os.path.join(os.getcwd(), "cookies")
+        base_dir  = os.path.dirname(os.path.abspath(__file__))
+        folder    = os.path.abspath(os.path.join(base_dir, "..", "cookies"))
         txt_files = glob.glob(os.path.join(folder, "*.txt"))
         if not txt_files:
             return None
@@ -50,7 +51,7 @@ def cookie_txt_file() -> str | None:
         log_file = os.path.join(folder, "logs.csv")
         with open(log_file, "a") as f:
             f.write(f"Chosen: {chosen}\n")
-        return f"cookies/{os.path.basename(chosen)}"
+        return chosen
     except Exception:
         return None
 
