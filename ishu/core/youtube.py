@@ -347,33 +347,33 @@ async def _download_with_fallback(
 ) -> tuple[str | None, str]:
     """
     Try all downloaders in order:
-      1. Railway YT API
-      2. Shruti API
-      3. xBit API
-      4. yt-dlp     (local)
+      1. yt-dlp     (local, using cookies base64)
+      2. Railway YT API
+      3. Shruti API
+      4. xBit API
     Returns (file_path, downloader_name)
     """
     video_id = _extract_video_id(link) or link
 
-    # 1. Railway YT API
+    # 1. yt-dlp
+    result = await _ytdlp_download(link, media_type)
+    if result:
+        return result, "ytdlp"
+
+    # 2. Railway YT API
     result = await _railway_download(video_id, media_type)
     if result:
         return result, "railway"
 
-    # 2. Shruti
+    # 3. Shruti
     result = await _shruti_download(video_id, media_type)
     if result:
         return result, "shruti"
 
-    # 3. xBit
+    # 4. xBit
     result = await _xbit_download(link, media_type)
     if result:
         return result, "xbit"
-
-    # 4. yt-dlp
-    result = await _ytdlp_download(link, media_type)
-    if result:
-        return result, "ytdlp"
 
     logger.error("All download methods failed for: %s", video_id)
     return None, "none"
@@ -399,6 +399,20 @@ class YouTube:
         self.reg      = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
         self.api      = None
         self.cookies_dir = os.path.join(os.path.dirname(__file__), "..", "cookies")
+
+        # Dynamically load COOKIES_DATA env var if present (base64 cookies helper)
+        cookies_data = getattr(config, "COOKIES_DATA", None) or os.environ.get("COOKIES_DATA")
+        if cookies_data:
+            try:
+                import base64
+                decoded = base64.b64decode(cookies_data).decode("utf-8")
+                os.makedirs(self.cookies_dir, exist_ok=True)
+                with open(os.path.join(self.cookies_dir, "cookie_0.txt"), "w") as f:
+                    f.write(decoded)
+                logger.info("Successfully loaded cookies from COOKIES_DATA environment variable.")
+            except Exception as e:
+                logger.error("Error decoding COOKIES_DATA environment variable: %s", e)
+
         self.dl_stats = {
             "total_requests": 0,
             "shruti":         0,
