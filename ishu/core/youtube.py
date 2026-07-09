@@ -702,26 +702,12 @@ class YouTube:
     ) -> str | None:
         """
         Get a direct stream URL without downloading (for immediate playback).
-        Tries Railway API first, then yt-dlp.
+        Tries yt-dlp first (using cookies base64 for fast direct stream), then Railway API.
         Returns stream URL or None.
         """
         link = _normalize_youtube_link(video_id, self.base)
         
-        # 1. Try Railway API first (fastest)
-        if RAILWAY_YT_API_URL and RAILWAY_YT_API_KEY:
-            try:
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "X-API-Key": str(RAILWAY_YT_API_KEY),
-                }
-                endpoint = "play/video/hq" if video else "play/audio"
-                media_url = f"{RAILWAY_YT_API_URL}/{endpoint}?id={video_id}"
-                # The Railway endpoint itself is the stream URL we want! No need for head! Let's return it directly!
-                return media_url
-            except Exception as e:
-                logger.warning("Railway get_stream_url failed: %s", e)
-        
-        # 2. Try yt-dlp for stream URL
+        # 1. Try yt-dlp first for stream URL (uses cookies base64 for direct access)
         try:
             cookie = cookie_txt_file()
             ydl_opts = {
@@ -739,9 +725,23 @@ class YouTube:
 
             url = await loop.run_in_executor(None, _run)
             if url:
+                logger.info("Extracted direct stream URL via yt-dlp: %s", video_id)
                 return url
         except Exception as e:
-            logger.warning("yt-dlp get_stream_url failed: %s", e)
+            logger.warning("yt-dlp get_stream_url failed for %s: %s", video_id, e)
+        
+        # 2. Try Railway API first as fallback
+        if RAILWAY_YT_API_URL and RAILWAY_YT_API_KEY:
+            try:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "X-API-Key": str(RAILWAY_YT_API_KEY),
+                }
+                endpoint = "play/video/hq" if video else "play/audio"
+                media_url = f"{RAILWAY_YT_API_URL}/{endpoint}?id={video_id}"
+                return media_url
+            except Exception as e:
+                logger.warning("Railway get_stream_url failed: %s", e)
             
         return None
 
