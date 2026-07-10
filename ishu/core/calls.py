@@ -3,7 +3,9 @@
 # This file is part of AnonXMusic
 
 
+import asyncio
 from pathlib import Path
+
 from ntgcalls import (ConnectionNotFound, TelegramServerError,
                       RTMPStreamingUnsupported, ConnectionError)
 from pyrogram.errors import (ChatSendMediaForbidden, ChatSendPhotosForbidden,
@@ -15,6 +17,38 @@ from pytgcalls.pytgcalls_session import PyTgCallsSession
 from ishu import (app, config, db, lang, logger,
                    queue, thumb, userbot, yt)
 from ishu.helpers import Media, Track, buttons
+
+
+def _cleanup_file(media) -> None:
+    """Delete the downloaded file for a media item, if it exists."""
+    if getattr(media, "file_path", None):
+        try:
+            path = Path(media.file_path)
+            if path.exists():
+                path.unlink()
+                logger.info("Cleaned up file: %s", media.file_path)
+        except Exception as e:
+            logger.warning("Failed to delete file %s: %s", media.file_path, e)
+        media.file_path = None
+
+
+def _bg_download(media) -> None:
+    """
+    Kick off a background download for a track.
+    Only starts if neither stream_url nor file_path is already set.
+    This ensures the file is ready if the stream URL expires mid-play.
+    """
+    if isinstance(media, Track) and not media.file_path:
+        async def _task():
+            try:
+                path = await yt.download(media.id, video=media.video)
+                if path:
+                    media.file_path = path
+                    logger.info("Background download complete: %s → %s", media.id, path)
+            except Exception as e:
+                logger.warning("Background download failed for %s: %s", media.id, e)
+
+        asyncio.create_task(_task())
 
 
 class TgCall(PyTgCalls):
@@ -33,18 +67,11 @@ class TgCall(PyTgCalls):
 
     async def stop(self, chat_id: int) -> None:
         client = await db.get_assistant(chat_id)
-        
+
         # Clean up files for all media items in queue
         q_items = queue.get_queue(chat_id)
         for item in q_items:
-            if getattr(item, "file_path", None):
-                try:
-                    path = Path(item.file_path)
-                    if path.exists():
-                        path.unlink()
-                        logger.info("Cleaned up queued file on stop: %s", item.file_path)
-                except Exception as e:
-                    logger.warning("Failed to delete file on stop %s: %s", item.file_path, e)
+            _cleanup_file(item)
 
         queue.clear(chat_id)
         await db.remove_call(chat_id)
@@ -71,16 +98,17 @@ class TgCall(PyTgCalls):
             else config.DEFAULT_THUMB
         ) if config.THUMB_GEN else None
 
-        # First, try to get a fast stream URL for instant playback
-        media_path = media.stream_url
-        used_stream = False
+        # ── Step 1: Resolve media path (prefer stream URL for instant play) ───
+        media_path = media.stream_url or media.file_path
+        used_stream = bool(media.stream_url)
+
         if not media_path and isinstance(media, Track):
             media_path = await yt.get_stream_url(media.id, video=media.video)
             if media_path:
                 media.stream_url = media_path
                 used_stream = True
 
-        # Now try to play, with fallback if needed
+        # ── Step 2: Attempt playback ──────────────────────────────────────────
         stream_success = False
         if media_path:
             try:
@@ -102,11 +130,17 @@ class TgCall(PyTgCalls):
                     config=types.GroupCallConfig(auto_start=False),
                 )
                 stream_success = True
+
+                # If we started via stream URL, kick off a background download
+                # so that the file is cached and cleanup works normally.
+                if used_stream and isinstance(media, Track):
+                    _bg_download(media)
+
             except Exception as e:
-                logger.warning(f"Stream URL failed: %s. Falling back to download.", e)
+                logger.warning("Stream URL failed: %s. Falling back to download.", e)
                 stream_success = False
 
-        # If stream failed or no stream not available, try download
+        # ── Step 3: Fallback — download then play ─────────────────────────────
         if not stream_success and isinstance(media, Track):
             media.file_path = await yt.download(media.id, video=media.video)
             media_path = media.file_path
@@ -116,7 +150,6 @@ class TgCall(PyTgCalls):
             return await self.play_next(chat_id)
 
         try:
-            # Now try again with downloaded file
             if not stream_success:
                 stream = types.MediaStream(
                     media_path=media_path,
@@ -144,7 +177,7 @@ class TgCall(PyTgCalls):
                 short_title = media.title.split("|")[0].split("(")[0].strip()
                 if len(short_title) > 50:
                     short_title = short_title[:47].rstrip() + "…"
-                    
+
                 text = _lang["play_media"].format(
                     media.url,
                     short_title,
@@ -169,6 +202,7 @@ class TgCall(PyTgCalls):
                     )
 
                 media.message_id = message.id
+
         except FileNotFoundError:
             await message.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
             await self.play_next(chat_id)
@@ -202,18 +236,19 @@ class TgCall(PyTgCalls):
             await db.set_loop(chat_id, loop - 1)
             return await self.replay(chat_id)
 
-        # Clean up the finished/skipped song's file
+        # ── Clean up the finished song's file BEFORE popping it ───────────────
         current_media = queue.get_current(chat_id)
-        if current_media and getattr(current_media, "file_path", None):
-            try:
-                path = Path(current_media.file_path)
-                if path.exists():
-                    path.unlink()
-                    logger.info("Cleaned up played file: %s", current_media.file_path)
-            except Exception as e:
-                logger.warning("Failed to delete played file %s: %s", current_media.file_path, e)
+        if current_media:
+            _cleanup_file(current_media)
 
+        # ── Advance queue ─────────────────────────────────────────────────────
         media = queue.get_next(chat_id)
+
+        # ── FIX: check media is not None BEFORE accessing its attributes ──────
+        if not media:
+            return await self.stop(chat_id)
+
+        # Delete the "now playing" message of the next track (it was "queued")
         try:
             if media.message_id:
                 await app.delete_messages(
@@ -225,29 +260,31 @@ class TgCall(PyTgCalls):
         except Exception:
             pass
 
-        if not media:
-            return await self.stop(chat_id)
-
         _lang = await lang.get_lang(chat_id)
         msg = await app.send_message(chat_id=chat_id, text=_lang["play_next"])
-        
-        # Prefer stream_url for fast play, else download
+
+        # ── Resolve playback source for the next track ────────────────────────
+        # Priority: existing file_path → existing stream_url → get stream URL
         if not media.file_path and not media.stream_url:
-            fname = f"downloads/{media.id}.{'mp4' if media.video else 'webm'}"
+            fname = f"downloads/{media.id}.{'mp4' if media.video else 'mp3'}"
             if Path(fname).exists():
                 media.file_path = fname
             else:
+                # Try fast stream URL first
                 media.stream_url = await yt.get_stream_url(media.id, video=media.video)
-                
-            # If still no stream or file, try downloading
-            if not media.stream_url and not media.file_path:
-                media.file_path = await yt.download(media.id, video=media.video)
-                
+
+                # If still nothing, fall back to download (blocks briefly)
+                if not media.stream_url:
+                    media.file_path = await yt.download(media.id, video=media.video)
+
         if not media.stream_url and not media.file_path:
-            await self.play_next(chat_id)
-            return await msg.edit_text(
-                _lang["error_no_file"].format(config.SUPPORT_CHAT)
-            )
+            await msg.edit_text(_lang["error_no_file"].format(config.SUPPORT_CHAT))
+            return await self.play_next(chat_id)
+
+        # ── Pre-download the track AFTER this one (look-ahead) ───────────────
+        next_media = queue.get_next(chat_id, check=True)
+        if next_media and isinstance(next_media, Track):
+            _bg_download(next_media)
 
         media.message_id = msg.id
         await self.play_media(chat_id, msg, media)

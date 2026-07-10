@@ -5,4 +5,5 @@ dockerfilePath = "Dockerfile"
 [deploy]
 startCommand = "bash start"
 restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 5
+restartPolicyMaxRetries = 10
+sleepApplication = false
