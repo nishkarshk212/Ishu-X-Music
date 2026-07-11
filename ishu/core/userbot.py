@@ -5,6 +5,9 @@
 
 from pyrogram import Client
 
+
+from pyrogram import errors
+
 from ishu import config, logger
 
 
@@ -47,7 +50,23 @@ class Userbot(Client):
             3: self.three,
         }
         client = clients[num]
-        await client.start()
+        try:
+            await client.start()
+        except errors.AuthKeyDuplicated:
+            # Telegram invalidated this session because the SAME session
+            # string is (or was) connected from another place at the same
+            # time. Once duplicated, the key is dead until regenerated.
+            raise SystemExit(
+                f"\n\n[Assistant {num}] AuthKeyDuplicated: the SESSION{num} "
+                "session string is being used by another instance (or was), "
+                "so Telegram invalidated it.\n"
+                "FIX (pick ONE):\n"
+                "  1. Make sure ONLY ONE deployment uses this session string "
+                "(kill the duplicate Railway deploy / local run / other host).\n"
+                "  2. If the key is already dead, generate a fresh session with "
+                "`python generate_session.py` and update SESSION"
+                f"{num} in your env.\n"
+            )
         try:
             await client.send_message(config.LOGGER_ID, "Assistant Started")
         except Exception:
