@@ -4,8 +4,38 @@
 
 
 import pyrogram
+from pyrogram import types
 
 from ishu import config, logger
+
+
+# Commands shown in the Telegram "/" menu. Group-facing commands go in the
+# default scope (groups + PM); PM-only commands override in private chats.
+MENU_COMMANDS = [
+    types.BotCommand(
+        "play",
+        "Play a song by name/URL (vplay=video, playforce=force as admin)",
+    ),
+    types.BotCommand("pause", "Pause the current playback"),
+    types.BotCommand("resume", "Resume the paused playback"),
+    types.BotCommand("skip", "Skip to the next track (next)"),
+    types.BotCommand("stop", "Stop playback and clear the queue (end)"),
+    types.BotCommand("queue", "Show the current queue / now playing"),
+    types.BotCommand("seek", "Seek forward/back in the current track"),
+    types.BotCommand("loop", "Loop the current track N times"),
+    types.BotCommand("stats", "Show chat stats"),
+    types.BotCommand("lang", "Change the bot's language"),
+    types.BotCommand("auth", "Authorize a user for admin commands (unauth)"),
+    types.BotCommand("admincache", "Reload the admin list for this chat"),
+    types.BotCommand("playmode", "Toggle admin-only play mode"),
+]
+
+PRIVATE_COMMANDS = [
+    types.BotCommand("start", "Start the bot and view help"),
+    types.BotCommand("help", "Show the help message"),
+    types.BotCommand("groups", "List groups where the bot is active"),
+    types.BotCommand("sudolist", "List sudo users"),
+]
 
 
 class Bot(pyrogram.Client):
@@ -23,6 +53,19 @@ class Bot(pyrogram.Client):
         self.logger = config.LOGGER_ID
         self.bl_users = pyrogram.filters.user()
         self.sudoers = pyrogram.filters.user(self.owner)
+
+    async def set_commands(self) -> None:
+        """Register the "/" command menu so Telegram suggests commands."""
+        try:
+            await self.set_bot_commands(
+                MENU_COMMANDS, scope=types.BotCommandScopeDefault()
+            )
+            await self.set_bot_commands(
+                PRIVATE_COMMANDS, scope=types.BotCommandScopeAllPrivateChats()
+            )
+            logger.info("Bot command menu registered.")
+        except Exception as ex:
+            logger.warning("Failed to set bot commands: %s", ex)
 
     async def boot(self):
         """
@@ -45,6 +88,8 @@ class Bot(pyrogram.Client):
 
         if get.status != pyrogram.enums.ChatMemberStatus.ADMINISTRATOR:
             raise SystemExit("Please promote the bot as an admin in logger group.")
+
+        await self.set_commands()
         logger.info(f"Bot started as @{self.username}")
 
     async def exit(self):
