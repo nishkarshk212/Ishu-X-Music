@@ -3,6 +3,7 @@
 # This file is part of AnonXMusic
 
 
+import asyncio
 import json
 from functools import wraps
 from pathlib import Path
@@ -94,6 +95,11 @@ class Language:
                     errors.Forbidden, errors.exceptions.Forbidden,
                     errors.ChatWriteForbidden, errors.exceptions.ChatWriteForbidden,
                 ):
+                    return
+                except (TimeoutError, asyncio.TimeoutError):
+                    # Transient MTProto timeout (dead/flaky connection, DC issue,
+                    # or duplicate session). Drop the update instead of crashing
+                    # the dispatcher and spamming the logs.
                     return
 
             return wrapper

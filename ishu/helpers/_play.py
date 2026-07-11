@@ -51,8 +51,20 @@ def checkUB(play):
         if chat_id not in db.active_calls:
             client = await db.get_client(chat_id)
             try:
-                member = await app.get_chat_member(chat_id, client.id)
-                if member.status in [
+                # get_chat_member can raise a bare TimeoutError when the MTProto
+                # link is momentarily unresponsive. Treat that as transient and
+                # let the user retry instead of crashing the whole handler.
+                try:
+                    member = await app.get_chat_member(chat_id, client.id)
+                except (TimeoutError, asyncio.TimeoutError):
+                    logger.warning(
+                        "get_chat_member timed out for assistant %s in %s; "
+                        "skipping membership check this attempt.",
+                        client.id, chat_id,
+                    )
+                    member = None
+
+                if member is not None and member.status in [
                     enums.ChatMemberStatus.BANNED,
                     enums.ChatMemberStatus.RESTRICTED,
                 ]:
