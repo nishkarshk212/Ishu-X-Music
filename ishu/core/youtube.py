@@ -847,18 +847,23 @@ class YouTube:
 
                 # Validate the endpoint responds before returning it as stream URL
                 async with aiohttp.ClientSession(headers=headers) as session:
-                    async with session.head(
+                    # NOTE: the Railway proxy rejects HEAD requests (405), so we
+                    # validate with a GET but release the body immediately — we only
+                    # need the HTTP status to confirm the endpoint serves media.
+                    async with session.get(
                         media_url,
                         timeout=aiohttp.ClientTimeout(total=10),
                         allow_redirects=True,
                     ) as resp:
-                        if resp.status in (200, 206):
+                        status = resp.status
+                        resp.release()  # drop the connection without reading media
+                        if status in (200, 206):
                             logger.info("Stream URL via Railway API: %s", video_id)
                             return media_url
                         else:
                             logger.warning(
                                 "Railway stream URL validation failed: status %s",
-                                resp.status,
+                                status,
                             )
             except Exception as e:
                 logger.warning("Railway get_stream_url failed: %s", e)
