@@ -41,6 +41,19 @@ YT_API_KEY          = getattr(config, "YT_API_KEY",          None)
 
 DOWNLOAD_DIR        = "downloads"
 
+# yt-dlp 2026.x needs a JS runtime to solve YouTube's n-signature challenge.
+# The default runtime is 'deno', but it is unreliable in containers; Node >= 23.5
+# is the dependable choice. If no working runtime is available every request
+# fails with "Sign in to confirm you're not a bot". Force the 'node' runtime.
+JS_RUNTIMES = {"node": {}}
+
+
+def _with_js_runtime(opts: dict) -> dict:
+    """Return a copy of yt-dlp opts that explicitly selects the node runtime."""
+    out = dict(opts)
+    out["js_runtimes"] = JS_RUNTIMES
+    return out
+
 
 # ── Cookie helper ─────────────────────────────────────────────────────────────
 def cookie_txt_file() -> str | None:
@@ -134,7 +147,7 @@ async def _cookies_download(link: str, media_type: str) -> str | None:
 
         loop = asyncio.get_event_loop()
         def _run():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(_with_js_runtime(ydl_opts)) as ydl:
                 ydl.download([_normalize_youtube_link(link)])
 
         await loop.run_in_executor(None, _run)
@@ -383,7 +396,7 @@ async def _ytdlp_nocookie_download(link: str, media_type: str) -> str | None:
 
         loop = asyncio.get_event_loop()
         def _run():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(_with_js_runtime(ydl_opts)) as ydl:
                 ydl.download([_normalize_youtube_link(link)])
 
         await loop.run_in_executor(None, _run)
@@ -726,7 +739,7 @@ class YouTube:
         if videoid:
             link = self.base + link
         link = _normalize_youtube_link(link)
-        ydl = yt_dlp.YoutubeDL({"quiet": True})
+        ydl = yt_dlp.YoutubeDL(_with_js_runtime({"quiet": True}))
         with ydl:
             info = ydl.extract_info(link, download=False)
         formats_available = []
@@ -751,7 +764,8 @@ class YouTube:
             link = self.base + link
         link = _normalize_youtube_link(link)
         proc = await asyncio.create_subprocess_exec(
-            "yt-dlp", "-g", "-f", "best[height<=?720][width<=?1280]", link,
+            "yt-dlp", "--js-runtimes", "node", "-g",
+            "-f", "best[height<=?720][width<=?1280]", link,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -789,6 +803,7 @@ class YouTube:
                 "quiet":       True,
                 "no_warnings": True,
             }
+            ydl_opts = _with_js_runtime(ydl_opts)
             if cookie:
                 ydl_opts["cookiefile"] = cookie
 

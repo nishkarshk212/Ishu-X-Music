@@ -13,13 +13,16 @@ RUN apt-get update -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 22
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+# Install Node.js 24 — yt-dlp 2026.x requires Node >= 23.5 to solve YouTube's
+# n-signature challenge. Without it every download fails with
+# "Sign in to confirm you're not a bot".
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Deno — persist to /usr/local/bin so it's always on PATH
+# Verify a compatible Node.js runtime is present (required by yt-dlp 2026.x)
+RUN node --version
 RUN curl -fsSL https://deno.land/install.sh | sh \
     && cp /root/.deno/bin/deno /usr/local/bin/deno
 
