@@ -41,6 +41,50 @@ YT_API_KEY          = getattr(config, "YT_API_KEY",          None)
 
 DOWNLOAD_DIR        = "downloads"
 
+# Per-video_id locks so the foreground download() and the background prefetch
+# task never run yt-dlp on the SAME video_id concurrently. Two concurrent
+# yt-dlp processes writing the same "<id>.mp3.part" / "<id>.orig.mp3" temp
+# files cause "Unable to rename file: [Errno 2]" crashes.
+_dl_locks: "dict[str, asyncio.Lock]" = {}
+
+
+def _dl_lock(video_id: str) -> asyncio.Lock:
+    lock = _dl_locks.get(video_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _dl_locks[video_id] = lock
+    return lock
+
+
+def _resolve_downloaded_file(video_id: str, ext: str) -> str | None:
+    """
+    Find the actual file produced by yt-dlp for `video_id`.
+
+    Because FFmpegExtractAudio / merge postprocessors rewrite the extension,
+    the real output may be:
+      - downloads/<id>.<ext>            (preferred, after outtmpl fix)
+      - downloads/<id>.<ext>.<ext>      (legacy when outtmpl ended in .mp3)
+      - downloads/<id>.<any-valid-ext>  (yt-dlp chose a different container)
+    We ignore transient temp files (*.part, *.ytdl, *.orig.*).
+    Returns the first existing, non-empty path or None.
+    """
+    import glob as _glob
+
+    candidates = [
+        os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}"),
+        os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}.{ext}"),
+    ]
+    for c in sorted(_glob.glob(os.path.join(DOWNLOAD_DIR, f"{video_id}.*"))):
+        if c.endswith((".part", ".ytdl")) or ".orig." in os.path.basename(c):
+            continue
+        candidates.append(c)
+
+    for c in candidates:
+        if os.path.exists(c) and os.path.getsize(c) > 0:
+            return c
+    return None
+
+
 # yt-dlp 2026.x needs a JS runtime to solve YouTube's n-signature challenge.
 # The default runtime is 'deno', but it is unreliable in containers; Node >= 23.5
 # is the dependable choice. If no working runtime is available every request
@@ -113,59 +157,82 @@ async def _cookies_download(link: str, media_type: str) -> str | None:
     file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
 
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-        return file_path
 
-    cookie = cookie_txt_file()
-    # Only proceed if we actually have cookies; no-cookie yt-dlp is priority 4
-    if not cookie:
-        return None
+    # De-duplicate concurrent fetches of the same video (foreground + background).
+    async with _dl_lock(video_id):
+        # Already downloaded (or left over from a prior run)? Reuse it.
+        existing = _resolve_downloaded_file(video_id, ext)
+        if existing:
+            return existing
 
-    try:
-        if media_type == "video":
-            ydl_opts = {
-                "format":              "bestvideo[height<=720]+bestaudio/best[height<=720]",
-                "outtmpl":             file_path,
-                "quiet":               True,
-                "no_warnings":         True,
-                "cookiefile":          cookie,
-                "merge_output_format": "mp4",
-            }
-        else:
-            ydl_opts = {
-                "format":       "bestaudio/best",
-                "outtmpl":      file_path,
-                "quiet":        True,
-                "no_warnings":  True,
-                "cookiefile":   cookie,
-                "postprocessors": [{
-                    "key":              "FFmpegExtractAudio",
-                    "preferredcodec":   "mp3",
-                    "preferredquality": "192",
-                }],
-            }
+        cookie = cookie_txt_file()
+        # Only proceed if we actually have cookies; no-cookie yt-dlp is priority 4
+        if not cookie:
+            return None
 
-        loop = asyncio.get_event_loop()
-        def _run():
-            with yt_dlp.YoutubeDL(_with_js_runtime(ydl_opts)) as ydl:
-                ydl.download([_normalize_youtube_link(link)])
+        try:
+            # Prune stale temp/residue left by a previous crashed run so yt-dlp
+            # doesn't collide on its own "<id>.orig.<ext>" rename step.
+            for suffix in (".part", ".ytdl"):
+                _tmp = f"{file_path}{suffix}"
+                if os.path.exists(_tmp):
+                    try:
+                        os.remove(_tmp)
+                    except OSError:
+                        pass
+            _orig = os.path.join(DOWNLOAD_DIR, f"{video_id}.orig.{ext}")
+            if os.path.exists(_orig):
+                try:
+                    os.remove(_orig)
+                except OSError:
+                    pass
 
-        await loop.run_in_executor(None, _run)
+            # Use a bare template ending in '.%(ext)s'. For audio the
+            # FFmpegExtractAudio postprocessor then writes the final file as
+            # downloads/<id>.mp3 (NOT <id>.mp3.mp3), avoiding the
+            # "<id>.mp3 -> <id>.orig.mp3" rename collision that was crashing
+            # the download chain. For video the merge step produces <id>.mp4.
+            outtmpl = os.path.join(DOWNLOAD_DIR, f"{video_id}.%(ext)s")
+            if media_type == "video":
+                ydl_opts = {
+                    "format":              "bestvideo[height<=720]+bestaudio/best[height<=720]",
+                    "outtmpl":             outtmpl,
+                    "quiet":               True,
+                    "no_warnings":         True,
+                    "cookiefile":          cookie,
+                    "merge_output_format": "mp4",
+                }
+            else:
+                ydl_opts = {
+                    "format":       "bestaudio/best",
+                    "outtmpl":      outtmpl,
+                    "quiet":        True,
+                    "no_warnings":  True,
+                    "cookiefile":   cookie,
+                    "postprocessors": [{
+                        "key":              "FFmpegExtractAudio",
+                        "preferredcodec":   "mp3",
+                        "preferredquality": "192",
+                    }],
+                }
 
-        candidates = [
-            file_path,
-            file_path.replace(f".{ext}", f".{ext}.{ext}"),
-        ]
-        for c in candidates:
-            if os.path.exists(c) and os.path.getsize(c) > 0:
-                logger.info("Cookies Base64 (yt-dlp) ✓ %s → %s", video_id, c)
-                return c
+            loop = asyncio.get_event_loop()
+            def _run():
+                with yt_dlp.YoutubeDL(_with_js_runtime(ydl_opts)) as ydl:
+                    ydl.download([_normalize_youtube_link(link)])
 
-        return None
+            await loop.run_in_executor(None, _run)
 
-    except Exception as exc:
-        logger.warning("Cookies Base64 download failed for %s: %s", video_id, exc)
-        return None
+            result = _resolve_downloaded_file(video_id, ext)
+            if result:
+                logger.info("Cookies Base64 (yt-dlp) ✓ %s → %s", video_id, result)
+                return result
+
+            return None
+
+        except Exception as exc:
+            logger.warning("Cookies Base64 download failed for %s: %s", video_id, exc)
+            return None
 
 
 # ── Downloader 2: Railway YT API ─────────────────────────────────────────────
@@ -369,52 +436,54 @@ async def _ytdlp_nocookie_download(link: str, media_type: str) -> str | None:
     file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
 
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-        return file_path
 
-    try:
-        if media_type == "video":
-            ydl_opts = {
-                "format":              "bestvideo[height<=720]+bestaudio/best[height<=720]",
-                "outtmpl":             file_path,
-                "quiet":               True,
-                "no_warnings":         True,
-                "merge_output_format": "mp4",
-            }
-        else:
-            ydl_opts = {
-                "format":       "bestaudio/best",
-                "outtmpl":      file_path,
-                "quiet":        True,
-                "no_warnings":  True,
-                "postprocessors": [{
-                    "key":              "FFmpegExtractAudio",
-                    "preferredcodec":   "mp3",
-                    "preferredquality": "192",
-                }],
-            }
+    async with _dl_lock(video_id):
+        existing = _resolve_downloaded_file(video_id, ext)
+        if existing:
+            return existing
 
-        loop = asyncio.get_event_loop()
-        def _run():
-            with yt_dlp.YoutubeDL(_with_js_runtime(ydl_opts)) as ydl:
-                ydl.download([_normalize_youtube_link(link)])
+        try:
+            # Bare template ending in '.%(ext)s' so the postprocessor produces
+            # downloads/<id>.mp3 (not <id>.mp3.mp3).
+            outtmpl = os.path.join(DOWNLOAD_DIR, f"{video_id}.%(ext)s")
+            if media_type == "video":
+                ydl_opts = {
+                    "format":              "bestvideo[height<=720]+bestaudio/best[height<=720]",
+                    "outtmpl":             outtmpl,
+                    "quiet":               True,
+                    "no_warnings":         True,
+                    "merge_output_format": "mp4",
+                }
+            else:
+                ydl_opts = {
+                    "format":       "bestaudio/best",
+                    "outtmpl":      outtmpl,
+                    "quiet":        True,
+                    "no_warnings":  True,
+                    "postprocessors": [{
+                        "key":              "FFmpegExtractAudio",
+                        "preferredcodec":   "mp3",
+                        "preferredquality": "192",
+                    }],
+                }
 
-        await loop.run_in_executor(None, _run)
+            loop = asyncio.get_event_loop()
+            def _run():
+                with yt_dlp.YoutubeDL(_with_js_runtime(ydl_opts)) as ydl:
+                    ydl.download([_normalize_youtube_link(link)])
 
-        candidates = [
-            file_path,
-            file_path.replace(f".{ext}", f".{ext}.{ext}"),
-        ]
-        for c in candidates:
-            if os.path.exists(c) and os.path.getsize(c) > 0:
-                logger.info("yt-dlp (no-cookie) ✓ %s → %s", video_id, c)
-                return c
+            await loop.run_in_executor(None, _run)
 
-        return None
+            result = _resolve_downloaded_file(video_id, ext)
+            if result:
+                logger.info("yt-dlp (no-cookie) ✓ %s → %s", video_id, result)
+                return result
 
-    except Exception as exc:
-        logger.warning("yt-dlp (no-cookie) download failed for %s: %s", video_id, exc)
-        return None
+            return None
+
+        except Exception as exc:
+            logger.warning("yt-dlp (no-cookie) download failed for %s: %s", video_id, exc)
+            return None
 
 
 # ── Main download entrypoint ──────────────────────────────────────────────────
