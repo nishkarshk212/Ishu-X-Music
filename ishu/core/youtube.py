@@ -584,6 +584,16 @@ class YouTube:
             except Exception as e:
                 logger.error("Error decoding COOKIES_DATA: %s", e)
 
+        # Log proxy status at boot so it's visible in deploy logs (e.g. Railway).
+        if YTDLP_PROXY:
+            logger.info("yt-dlp proxy active: %s", YTDLP_PROXY.split("@")[-1] or YTDLP_PROXY)
+        else:
+            logger.warning(
+                "yt-dlp proxy NOT set (YTDLP_PROXY empty). On datacenter hosts "
+                "(Railway/Render) cookie/yt-dlp downloads will 403. Set YTDLP_PROXY "
+                "to a clean vps/residential proxy, e.g. socks5://user:pass@host:port."
+            )
+
         self.dl_stats = {
             "total_requests": 0,
             "cookies_b64":    0,
@@ -880,7 +890,51 @@ class YouTube:
         """
         link = _normalize_youtube_link(video_id, self.base)
 
-        # ── Method 1: yt-dlp with cookies base64 ─────────────────────────────
+        # ── Method 1: Railway API (validated) ────────────────────────────────
+        # Returns a STABLE proxy URL that the Railway service re-fetches
+        # server-side on every request. Telegram's media servers CAN stream
+        # from it. This MUST be preferred over the yt-dlp googlevideo.com URL:
+        # those URLs are digitally signed + IP-locked to the host that fetched
+        # them, so PyTgCalls (streaming from Telegram's ingestion servers, a
+        # different IP) gets "No audio source found" / 403 every time.
+        if RAILWAY_YT_API_URL and RAILWAY_YT_API_KEY:
+            try:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "X-API-Key": str(RAILWAY_YT_API_KEY),
+                }
+                endpoint  = "play/video/hq" if video else "play/audio"
+                media_url = f"{RAILWAY_YT_API_URL}/{endpoint}?id={video_id}"
+
+                # Validate the endpoint responds before returning it as stream URL
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    # NOTE: the Railway proxy rejects HEAD requests (405), so we
+                    # validate with a GET but release the body immediately — we only
+                    # need the HTTP status to confirm the endpoint serves media.
+                    async with session.get(
+                        media_url,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                        allow_redirects=True,
+                    ) as resp:
+                        status = resp.status
+                        resp.release()  # drop the connection without reading media
+                        if status in (200, 206):
+                            logger.info("Stream URL via Railway API: %s", video_id)
+                            return media_url
+                        else:
+                            logger.warning(
+                                "Railway stream URL validation failed: status %s",
+                                status,
+                            )
+            except Exception as e:
+                # str(TimeoutError) etc. can be empty — always log the type too.
+                logger.warning("Railway get_stream_url failed: %s: %r", type(e).__name__, e)
+
+        # ── Method 2: yt-dlp googlevideo URL (LAST RESORT — usually fails) ────
+        # Only reached when no Railway API is configured. The URL returned here
+        # is IP-locked to this host and is almost always rejected by PyTgCalls,
+        # so callers must already have a download fallback. Kept for self-hosted
+        # setups on clean (non-datacenter) IPs where it can occasionally work.
         try:
             cookie = cookie_txt_file()
             ydl_opts = {
@@ -922,39 +976,6 @@ class YouTube:
             logger.warning("get_stream_url yt-dlp timed out for %s", video_id)
         except Exception as e:
             logger.warning("get_stream_url yt-dlp failed for %s: %s", video_id, e)
-
-        # ── Method 2: Railway API (validated) ────────────────────────────────
-        if RAILWAY_YT_API_URL and RAILWAY_YT_API_KEY:
-            try:
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "X-API-Key": str(RAILWAY_YT_API_KEY),
-                }
-                endpoint  = "play/video/hq" if video else "play/audio"
-                media_url = f"{RAILWAY_YT_API_URL}/{endpoint}?id={video_id}"
-
-                # Validate the endpoint responds before returning it as stream URL
-                async with aiohttp.ClientSession(headers=headers) as session:
-                    # NOTE: the Railway proxy rejects HEAD requests (405), so we
-                    # validate with a GET but release the body immediately — we only
-                    # need the HTTP status to confirm the endpoint serves media.
-                    async with session.get(
-                        media_url,
-                        timeout=aiohttp.ClientTimeout(total=10),
-                        allow_redirects=True,
-                    ) as resp:
-                        status = resp.status
-                        resp.release()  # drop the connection without reading media
-                        if status in (200, 206):
-                            logger.info("Stream URL via Railway API: %s", video_id)
-                            return media_url
-                        else:
-                            logger.warning(
-                                "Railway stream URL validation failed: status %s",
-                                status,
-                            )
-            except Exception as e:
-                logger.warning("Railway get_stream_url failed: %s", e)
 
         return None
 

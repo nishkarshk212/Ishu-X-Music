@@ -35,6 +35,14 @@ class Config:
         # Shruti API — Primary download source (get key from @SHRUTIAPIBOT)
         self.SHRUTI_API_URL = getenv("SHRUTI_API_URL", "http://api01.shrutibots.site")
         self.SHRUTI_API_KEY = getenv("SHRUTI_API_KEY", "")
+
+        # Outbound proxy for ALL yt-dlp requests (cookies + no-cookie download).
+        # Datacenter IPs (Railway, Render, etc.) are bot-flagged by YouTube ->
+        # HTTP 403 even with valid cookies. Route yt-dlp through a clean
+        # residential/ISP/VPS proxy so the cookie download path actually works
+        # instead of 403'ing. Format: socks5://user:pass@host:port
+        # (proven: socks5://lily:lilypass@165.245.190.41:1080).
+        self.YTDLP_PROXY = getenv("YTDLP_PROXY", "").strip()
         
         self.AUTO_LEAVE: bool = getenv("AUTO_LEAVE", "False").lower() == "true"
         self.AUTO_END: bool = getenv("AUTO_END", "False").lower() == "true"

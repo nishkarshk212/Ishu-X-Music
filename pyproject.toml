@@ -17,4 +17,7 @@ dependencies = [
     "pytgcrypto>=1.2.11",
     "python-dotenv~=1.2.1",
     "yt-dlp[default]>=2026.3.17",
+    # Required for SOCKS5 (YTDLP_PROXY) support in yt-dlp — without it the
+    # proxy is silently unusable and fails with "socksio not installed".
+    "pysocks>=1.7.1",
 ]
