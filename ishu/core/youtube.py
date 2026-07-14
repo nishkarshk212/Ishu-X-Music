@@ -91,11 +91,20 @@ def _resolve_downloaded_file(video_id: str, ext: str) -> str | None:
 # fails with "Sign in to confirm you're not a bot". Force the 'node' runtime.
 JS_RUNTIMES = {"node": {}}
 
+# Optional outbound proxy for ALL yt-dlp requests. Datacenter IPs (Railway,
+# Render, etc.) are routinely bot-flagged by YouTube -> HTTP 403 / "Sign in to
+# confirm you're not a bot" even with valid cookies. Route through a clean
+# residential/ISP proxy to bypass the IP flag. Format e.g.
+# http://user:pass@host:port  or  socks5://user:pass@host:port
+YTDLP_PROXY = (getattr(config, "YTDLP_PROXY", None) or os.environ.get("YTDLP_PROXY") or "").strip()
+
 
 def _with_js_runtime(opts: dict) -> dict:
-    """Return a copy of yt-dlp opts that explicitly selects the node runtime."""
+    """Return a copy of yt-dlp opts with the node runtime and optional proxy."""
     out = dict(opts)
     out["js_runtimes"] = JS_RUNTIMES
+    if YTDLP_PROXY:
+        out["proxy"] = YTDLP_PROXY
     return out
 
 
